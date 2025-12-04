@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verificación de ubicación</title>
+  <style>
+    body{
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background:#f5f7fa;
+      margin:0; padding:24px;
+      display:flex; justify-content:center; align-items:flex-start;
+    }
+    .card{
+      width:100%; max-width:520px;
+      background:#fff; border-radius:14px;
+      padding:22px 20px;
+      box-shadow:0 2px 12px rgba(0,0,0,.08);
+      text-align:center;
+    }
+    h2{ margin:0 0 6px; color:#004aad; }
+    .muted{ color:#666; font-size:14px; }
+    .ok{ color:#0a7a0a; font-weight:700; }
+    .bad{ color:#b00020; font-weight:700; }
+    button{
+      background:#004aad; color:#fff; border:0;
+      padding:12px 18px; border-radius:8px;
+      font-size:16px; cursor:pointer; margin-top:10px;
+    }
+    button.secondary{ background:#eee; color:#111; }
+    #mensaje{ margin-top:14px; font-size:16px; line-height:1.45; }
+    .small{ font-size:13px; color:#777; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Verificación de ubicación</h2>
+    <p class="muted">
+      Permite el acceso a tu ubicación para continuar.
+      <br><span class="small">En iPhone toca “Verificar ubicación”.</span>
+    </p>
+
+    <button id="btnVerificar">Verificar ubicación</button>
+    <button id="btnReintentar" class="secondary" style="display:none;">Reintentar</button>
+
+    <div id="mensaje"></div>
+    <div id="detalle" class="small"></div>
+  </div>
+
+<script>
+const RADIO_PERMITIDO = 500; // metros
+
+const SEDES = [
+  { nombre: "SEDE GAIRA KM7",     lat: 11.18957,  lng: -74.21414 },
+  { nombre: "RELLENO SANITARIO", lat: 11.256635, lng: -74.157481 },
+  { nombre: "REBOMBEO",          lat: 11.18702,  lng: -74.2173 },
+  { nombre: "CAN CLL 22",        lat: 11.23625,  lng: -74.18786 },
+  { nombre: "PTAP MAMATOCO",     lat: 11.224788, lng: -74.160243 }
+];
+
+const ISSUE_URL = "/.netlify/functions/issue";
+
+const msgEl = document.getElementById("mensaje");
+const detEl = document.getElementById("detalle");
+const btnVerificar = document.getElementById("btnVerificar");
+const btnReintentar = document.getElementById("btnReintentar");
+
+window.addEventListener("load", () => verificarUbicacion());
+btnVerificar.addEventListener("click", () => verificarUbicacion());
+btnReintentar.addEventListener("click", () => verificarUbicacion());
+
+function verificarUbicacion() {
+  msgEl.textContent = "📡 Verificando tu ubicación...";
+  detEl.textContent = "";
+  btnReintentar.style.display = "none";
+
+  if (!navigator.geolocation) {
+    msgEl.innerHTML = "<span class='bad'>❌ Tu dispositivo no soporta geolocalización.</span>";
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const latUser = pos.coords.latitude;
+      const lngUser = pos.coords.longitude;
+      const accuracy = pos.coords.accuracy;
+
+      let mejor = null;
+      for (const sede of SEDES) {
+        const d = haversineMeters(latUser, lngUser, sede.lat, sede.lng);
+        if (!mejor || d < mejor.dist) mejor = { ...sede, dist: d };
+      }
+
+      if (mejor.dist <= RADIO_PERMITIDO) {
+        msgEl.innerHTML =
+          `<span class="ok">✅ Estás dentro del perímetro permitido.</span><br>` +
+          `Sede detectada: <b>${mejor.nombre}</b><br>` +
+          `Distancia al punto: <b>${Math.round(mejor.dist)} m</b><br>` +
+          `<span class="muted">Generando acceso…</span>`;
+
+        detEl.textContent = `Precisión GPS aprox: ±${Math.round(accuracy)} m`;
+
+        try {
+          const r = await fetch(ISSUE_URL, { cache: "no-store" });
+          const data = await r.json();
+          if (!data.ok || !data.goUrl) throw new Error();
+          window.location.href = data.goUrl; // ahora va a /form.html?token=...
+        } catch {
+          msgEl.innerHTML =
+            `<span class="bad">⚠️ Error generando acceso.</span><br>` +
+            `Intenta nuevamente.`;
+          btnReintentar.style.display = "inline-block";
+        }
+
+      } else {
+        msgEl.innerHTML =
+          `<span class="bad">❌ No estás en el perímetro permitido.</span><br>` +
+          `Estás a <b>${Math.round(mejor.dist)} m</b> del punto más cercano.<br>` +
+          `Sede más cercana: <b>${mejor.nombre}</b>`;
+
+        detEl.textContent = `Precisión GPS aprox: ±${Math.round(accuracy)} m`;
+        btnReintentar.style.display = "inline-block";
+      }
+    },
+    (err) => {
+      let texto = "⚠️ No se pudo obtener tu ubicación.";
+      if (err.code === 1) texto = "⚠️ Debes permitir el acceso a tu ubicación.";
+      if (err.code === 2) texto = "⚠️ Ubicación no disponible. Revisa GPS/Internet.";
+      if (err.code === 3) texto = "⚠️ Tiempo de espera agotado.";
+
+      msgEl.innerHTML = `<span class="bad">${texto}</span>`;
+      btnReintentar.style.display = "inline-block";
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+  );
+}
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat/2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon/2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+</script>
+</body>
+</html>

@@ -3,52 +3,56 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Verificación de ubicación</title>
+  <title>Encuesta</title>
   <style>
-    body{
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      background:#f5f7fa;
-      margin:0; padding:24px;
-      display:flex; justify-content:center; align-items:flex-start;
-    }
-    .card{
-      width:100%; max-width:520px;
-      background:#fff; border-radius:14px;
-      padding:22px 20px;
-      box-shadow:0 2px 12px rgba(0,0,0,.08);
+    html, body { margin:0; padding:0; height:100%; }
+    iframe { width:100%; height:100%; border:0; }
+    .wrap {
+      font-family: system-ui, Arial, sans-serif;
+      height:100%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
       text-align:center;
     }
-    h2{ margin:0 0 6px; color:#004aad; }
-    .muted{ color:#666; font-size:14px; }
+    .card{
+      width:100%;
+      max-width:520px;
+      background:#fff;
+      border-radius:14px;
+      padding:22px 20px;
+      box-shadow:0 2px 12px rgba(0,0,0,.08);
+    }
     .ok{ color:#0a7a0a; font-weight:700; }
     .bad{ color:#b00020; font-weight:700; }
+    .muted{ color:#666; font-size:14px; }
     button{
       background:#004aad; color:#fff; border:0;
       padding:12px 18px; border-radius:8px;
-      font-size:16px; cursor:pointer; margin-top:10px;
+      font-size:16px; cursor:pointer; margin-top:12px;
     }
     button.secondary{ background:#eee; color:#111; }
-    #mensaje{ margin-top:14px; font-size:16px; line-height:1.45; }
-    .small{ font-size:13px; color:#777; margin-top:6px; }
+    .small{ font-size:13px; color:#777; margin-top:8px; }
+    body{ background:#f5f7fa; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h2>Verificación de ubicación</h2>
-    <p class="muted">
-      Permite el acceso a tu ubicación para continuar.
-      <br><span class="small">En iPhone toca “Verificar ubicación”.</span>
-    </p>
-
-    <button id="btnVerificar">Verificar ubicación</button>
-    <button id="btnReintentar" class="secondary" style="display:none;">Reintentar</button>
-
-    <div id="mensaje"></div>
-    <div id="detalle" class="small"></div>
+  <div id="root" class="wrap">
+    <div class="card">
+      <div id="msg">Validando acceso...</div>
+      <div id="detail" class="small"></div>
+      <div id="actions"></div>
+    </div>
   </div>
 
 <script>
-const RADIO_PERMITIDO = 200; // metros
+/** =========================
+ * CONFIG
+ * ========================= */
+const FORM_URL = "https://forms.office.com/r/e418pQnBS0?origin=lprLink";
+const VALIDATE_URL = "/.netlify/functions/validate";
+const RADIO_PERMITIDO = 500; // metros
 
 const SEDES = [
   { nombre: "SEDE GAIRA KM7",     lat: 11.18957,  lng: -74.21414 },
@@ -58,81 +62,36 @@ const SEDES = [
   { nombre: "PTAP MAMATOCO",     lat: 11.224788, lng: -74.160243 }
 ];
 
-const ISSUE_URL = "/.netlify/functions/issue";
+// Cada cuánto revalidar GPS
+const INTERVALO_MS = 60 * 1000; // 1 minuto
 
-const msgEl = document.getElementById("mensaje");
-const detEl = document.getElementById("detalle");
-const btnVerificar = document.getElementById("btnVerificar");
-const btnReintentar = document.getElementById("btnReintentar");
+/** =========================
+ * UI
+ * ========================= */
+const root = document.getElementById("root");
+const msgEl = document.getElementById("msg");
+const detEl = document.getElementById("detail");
+const actEl = document.getElementById("actions");
 
-window.addEventListener("load", () => verificarUbicacion());
-btnVerificar.addEventListener("click", () => verificarUbicacion());
-btnReintentar.addEventListener("click", () => verificarUbicacion());
+let token = null;
+let timerId = null;
+let iframeMostrado = false;
 
-function verificarUbicacion() {
-  msgEl.textContent = "📡 Verificando tu ubicación...";
-  detEl.textContent = "";
-  btnReintentar.style.display = "none";
+/** =========================
+ * Helpers
+ * ========================= */
+function setMsg(html, detail=""){
+  msgEl.innerHTML = html;
+  detEl.textContent = detail;
+}
 
-  if (!navigator.geolocation) {
-    msgEl.innerHTML = "<span class='bad'>❌ Tu dispositivo no soporta geolocalización.</span>";
-    return;
-  }
+function botones(html){
+  actEl.innerHTML = html || "";
+}
 
-  navigator.geolocation.getCurrentPosition(
-    async (pos) => {
-      const latUser = pos.coords.latitude;
-      const lngUser = pos.coords.longitude;
-      const accuracy = pos.coords.accuracy;
-
-      let mejor = null;
-      for (const sede of SEDES) {
-        const d = haversineMeters(latUser, lngUser, sede.lat, sede.lng);
-        if (!mejor || d < mejor.dist) mejor = { ...sede, dist: d };
-      }
-
-      if (mejor.dist <= RADIO_PERMITIDO) {
-        msgEl.innerHTML =
-          `<span class="ok">✅ Estás dentro del perímetro permitido.</span><br>` +
-          `Sede detectada: <b>${mejor.nombre}</b><br>` +
-          `Distancia al punto: <b>${Math.round(mejor.dist)} m</b><br>` +
-          `<span class="muted">Generando acceso…</span>`;
-
-        detEl.textContent = `Precisión GPS aprox: ±${Math.round(accuracy)} m`;
-
-        try {
-          const r = await fetch(ISSUE_URL, { cache: "no-store" });
-          const data = await r.json();
-          if (!data.ok || !data.goUrl) throw new Error();
-          window.location.href = data.goUrl; // ahora va a /form.html?token=...
-        } catch {
-          msgEl.innerHTML =
-            `<span class="bad">⚠️ Error generando acceso.</span><br>` +
-            `Intenta nuevamente.`;
-          btnReintentar.style.display = "inline-block";
-        }
-
-      } else {
-        msgEl.innerHTML =
-          `<span class="bad">❌ No estás en el perímetro permitido.</span><br>` +
-          `Estás a <b>${Math.round(mejor.dist)} m</b> del punto más cercano.<br>` +
-          `Sede más cercana: <b>${mejor.nombre}</b>`;
-
-        detEl.textContent = `Precisión GPS aprox: ±${Math.round(accuracy)} m`;
-        btnReintentar.style.display = "inline-block";
-      }
-    },
-    (err) => {
-      let texto = "⚠️ No se pudo obtener tu ubicación.";
-      if (err.code === 1) texto = "⚠️ Debes permitir el acceso a tu ubicación.";
-      if (err.code === 2) texto = "⚠️ Ubicación no disponible. Revisa GPS/Internet.";
-      if (err.code === 3) texto = "⚠️ Tiempo de espera agotado.";
-
-      msgEl.innerHTML = `<span class="bad">${texto}</span>`;
-      btnReintentar.style.display = "inline-block";
-    },
-    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
-  );
+function salir(){
+  // Vuelve a la raíz para que tenga que re-escanear (y pedir token nuevo)
+  window.location.replace("/");
 }
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
@@ -147,6 +106,137 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   return R * c;
 }
+
+function sedeMasCercana(latUser, lngUser){
+  let mejor = null;
+  for (const sede of SEDES) {
+    const d = haversineMeters(latUser, lngUser, sede.lat, sede.lng);
+    if (!mejor || d < mejor.dist) mejor = { ...sede, dist: d };
+  }
+  return mejor;
+}
+
+async function validarToken(){
+  const r = await fetch(`${VALIDATE_URL}?token=${encodeURIComponent(token)}`, { cache: "no-store" });
+  const data = await r.json();
+  return !!data.ok;
+}
+
+/** =========================
+ * GPS check (1 minuto)
+ * ========================= */
+function pedirUbicacionUnaVezYContinuar(){
+  if (!navigator.geolocation) {
+    setMsg("<span class='bad'>❌ Tu dispositivo no soporta geolocalización.</span>");
+    botones(`<button onclick="salir()">Volver</button>`);
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      // Primera comprobación y luego cada 1 minuto
+      comprobarRango(pos);
+      if (timerId) clearInterval(timerId);
+      timerId = setInterval(() => {
+        navigator.geolocation.getCurrentPosition(
+          (p) => comprobarRango(p),
+          () => { /* si falla una lectura, no expulsamos; reintenta en el próximo minuto */ },
+          { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+        );
+      }, INTERVALO_MS);
+    },
+    (err) => {
+      let texto = "⚠️ No se pudo obtener tu ubicación.";
+      if (err.code === 1) texto = "⚠️ Debes permitir el acceso a tu ubicación.";
+      if (err.code === 2) texto = "⚠️ Ubicación no disponible. Revisa GPS/Internet.";
+      if (err.code === 3) texto = "⚠️ Tiempo de espera agotado.";
+
+      setMsg(`<span class='bad'>${texto}</span>`);
+      botones(`
+        <button onclick="pedirUbicacionUnaVezYContinuar()">Reintentar</button>
+        <button class="secondary" onclick="salir()">Volver</button>
+      `);
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+  );
+}
+
+function comprobarRango(pos){
+  const latUser = pos.coords.latitude;
+  const lngUser = pos.coords.longitude;
+  const accuracy = pos.coords.accuracy;
+
+  const mejor = sedeMasCercana(latUser, lngUser);
+
+  // Si se sale del rango: bloquear y expulsar
+  if (mejor.dist > RADIO_PERMITIDO) {
+    if (timerId) clearInterval(timerId);
+
+    setMsg(
+      `<span class="bad">⛔ Saliste del perímetro permitido.</span><br>
+       Estás a <b>${Math.round(mejor.dist)} m</b> del punto más cercano.<br>
+       Sede más cercana: <b>${mejor.nombre}</b><br>
+       <span class="muted">Debes volver a escanear el QR en la sede.</span>`,
+      `Precisión GPS aprox: ±${Math.round(accuracy)} m`
+    );
+
+    botones(`<button onclick="salir()">Volver</button>`);
+    return;
+  }
+
+  // Si está dentro y aún no mostramos el iframe, mostrarlo
+  if (!iframeMostrado) {
+    iframeMostrado = true;
+
+    // Quitar token de la URL (para que no quede guardado)
+    history.replaceState({}, "", "/form.html");
+
+    // IMPORTANTE: SIN allow="geolocation *" para evitar doble prompt
+    root.innerHTML = `<iframe src="${FORM_URL}"></iframe>`;
+  }
+}
+
+/** =========================
+ * Main
+ * ========================= */
+(async function main(){
+  const params = new URLSearchParams(location.search);
+  token = params.get("token");
+
+  if (!token) {
+    salir();
+    return;
+  }
+
+  try {
+    const ok = await validarToken();
+    if (!ok) {
+      setMsg("<span class='bad'>⛔ Acceso inválido o expirado.</span><br><span class='muted'>Vuelve a escanear el QR.</span>");
+      botones(`<button onclick="salir()">Volver</button>`);
+      return;
+    }
+
+    setMsg("<span class='ok'>✅ Acceso validado.</span><br><span class='muted'>Confirmando ubicación…</span>");
+
+    // Aquí es donde pedimos ubicación (solo 1 permiso, y luego revalidamos cada 1 minuto)
+    pedirUbicacionUnaVezYContinuar();
+
+  } catch (e) {
+    setMsg("<span class='bad'>⚠️ Error validando acceso.</span><br><span class='muted'>Vuelve a escanear el QR.</span>");
+    botones(`<button onclick="salir()">Volver</button>`);
+  }
+})();
+
+// Si el usuario vuelve a la pestaña, hacemos un chequeo inmediato
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && iframeMostrado && navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (p) => comprobarRango(p),
+      () => {},
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+    );
+  }
+});
 </script>
 </body>
 </html>

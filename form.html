@@ -1,55 +1,118 @@
-<!DOCTYPE html>
-<html lang="es">
+<!doctype html>
+<html>
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Encuesta</title>
+  <title>Asistencia</title>
   <style>
     html, body { margin:0; padding:0; height:100%; }
-    iframe { width:100%; height:100%; border:0; }
-    .msg{
-      font-family: system-ui, Arial, sans-serif;
-      padding:20px; text-align:center;
+    #wrap { height:100%; }
+    #msg { padding:16px; font-family:system-ui, Arial; text-align:center; }
+    #overlay {
+      position:fixed; inset:0; display:none;
+      background:rgba(0,0,0,.75); color:#fff;
+      font-family:system-ui, Arial; text-align:center;
+      padding:24px; z-index:9999;
     }
+    iframe { width:100%; height:100%; border:0; }
+    button { padding:12px 16px; border:0; border-radius:10px; cursor:pointer; font-weight:700; }
   </style>
 </head>
 <body>
-  <div id="wrap" class="msg">Validando acceso...</div>
+  <div id="overlay">
+    <h2>Fuera del área permitida</h2>
+    <p>Debes volver a escanear el QR en el punto autorizado para continuar.</p>
+    <button onclick="location.reload()">Reintentar</button>
+  </div>
 
-<script>
-const FORM_URL = "https://forms.office.com/r/e418pQnBS0?origin=lprLink";
+  <div id="wrap">
+    <div id="msg">Validando ubicación…</div>
+    <iframe id="formsFrame" src=""></iframe>
+  </div>
 
-async function main(){
-  const params = new URLSearchParams(location.search);
-  const token = params.get("token");
+  <script>
+    // ✅ TU URL REAL DE MICROSOFT FORMS
+    const FORMS_URL = "https://forms.office.com/r/XXXXXXXXXXXX"; // <-- cambia esto
 
-  if(!token){
-    location.replace("/"); 
-    return;
-  }
+    // cada 1 minuto (como pediste)
+    const RECHECK_MS = 60_000;
 
-  try{
-    const r = await fetch(`/.netlify/functions/validate?token=${encodeURIComponent(token)}`, { cache:"no-store" });
-    const data = await r.json();
+    let intervalId = null;
 
-    if(!data.ok){
-      location.replace("/");
-      return;
+    async function getLocation() {
+      return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) return reject(new Error("No geolocation"));
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            acc: pos.coords.accuracy
+          }),
+          (err) => reject(err),
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+        );
+      });
     }
 
-    document.getElementById("wrap").outerHTML = `
-      <iframe src="${FORM_URL}" allow="geolocation *"></iframe>
-    `;
+    async function validateOnce() {
+      const loc = await getLocation();
+      const res = await fetch("/.netlify/functions/validate", {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ lat: loc.lat, lng: loc.lng })
+      });
+      const data = await res.json();
+      return { ...data, acc: loc.acc };
+    }
 
-    // Quitar token de la barra
-    history.replaceState({}, "", "/form.html");
+    function lock() {
+      document.getElementById("overlay").style.display = "block";
+      document.getElementById("msg").textContent = "";
+      // corta el acceso al forms
+      document.getElementById("formsFrame").src = "";
+      if (intervalId) clearInterval(intervalId);
+    }
 
-  }catch(e){
-    location.replace("/");
-  }
-}
+    async function start() {
+      try {
+        const msg = document.getElementById("msg");
+        const frame = document.getElementById("formsFrame");
 
-main();
-</script>
+        // 1) validación inicial
+        const first = await validateOnce();
+        if (!first.ok) {
+          msg.textContent = `No estás en el área permitida. Distancia: ${first.distance_m}m`;
+          return lock();
+        }
+
+        msg.textContent = `Acceso permitido. Distancia: ${first.distance_m}m. (Se revalida cada 1 min)`;
+
+        // 2) cargar forms solo si está permitido
+        frame.src = FORMS_URL;
+
+        // 3) revalidación periódica
+        intervalId = setInterval(async () => {
+          try {
+            const v = await validateOnce();
+            if (!v.ok) return lock();
+            // opcional: actualizar mensaje
+            msg.textContent = `Acceso permitido. Distancia: ${v.distance_m}m (revalida cada 1 min)`;
+          } catch (e) {
+            // si no se puede validar, bloquea (mejor seguro que abierto)
+            lock();
+          }
+        }, RECHECK_MS);
+
+      } catch (e) {
+        document.getElementById("msg").textContent =
+          "No se pudo validar ubicación. Activa GPS y permisos de ubicación.";
+        lock();
+      }
+    }
+
+    start();
+  </script>
 </body>
 </html>
+
+

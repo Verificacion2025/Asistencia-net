@@ -21,19 +21,33 @@
       text-align:center;
     }
 
-    iframe { width:100%; height:calc(100vh - 48px); border:0; display:none; }
+    iframe {
+      width:100%;
+      height:calc(100vh - 48px);
+      border:0;
+      display:none;
+    }
 
     #overlay{
-      position:fixed; inset:0; display:none;
-      background:rgba(0,0,0,.78); color:#fff;
-      padding:24px; z-index:9999;
+      position:fixed;
+      inset:0;
+      display:none;
+      background:rgba(0,0,0,.78);
+      color:#fff;
+      padding:24px;
+      z-index:9999;
       text-align:center;
     }
+
     #overlay h2{ margin:0 0 10px; }
     #overlay p{ margin:0 0 14px; line-height:1.4; }
+
     #overlay button{
-      padding:12px 16px; border:0; border-radius:10px;
-      cursor:pointer; font-weight:700;
+      padding:12px 16px;
+      border:0;
+      border-radius:10px;
+      cursor:pointer;
+      font-weight:700;
     }
   </style>
 </head>
@@ -42,43 +56,48 @@
   <div id="topbar">Validando acceso…</div>
 
   <div id="overlay">
-    <h2>Fuera del área permitida</h2>
-    <p>
-      Detectamos que saliste del perímetro autorizado.<br>
-      Debes volver a escanear el QR en el punto autorizado para continuar.
-    </p>
-    <button onclick="location.replace('/')">Volver a inicio</button>
+    <h2 id="overlayTitle">Aviso</h2>
+    <p id="overlayText"></p>
+    <button id="overlayBtn">Actualizar</button>
   </div>
 
   <div id="msg">Validando acceso…</div>
-  <iframe id="formsFrame" src="" allow="geolocation *"></iframe>
+  <iframe id="formsFrame"
+    src=""
+    allow="geolocation *">
+  </iframe>
 
 <script>
-/**
- * CONFIG
- */
-const RECHECK_MS = 60_000; // 1 minuto
+/* ================= CONFIG ================= */
 
-const FORM_URL = "https://forms.office.com/pages/responsepage.aspx?id=phunyhs3akmGvKPvvktvmxNRWgTyZ2VAuDflhEb8kKNUMkc5OEs0WjM3QVU4OEdTUzJJSDZMSEI4WS4u&origin=lprLink&route=shorturl";
+// ⏱️ 45 segundos
+const RECHECK_MS = 45_000;
 
-/**
- * UI
- */
+// 🔗 TU MICROSOFT FORMS
+const FORM_URL =
+  "https://forms.office.com/pages/responsepage.aspx?id=phunyhs3akmGvKPvvktvmxNRWgTyZ2VAuDflhEb8kKNUMkc5OEs0WjM3QVU4OEdTUzJJSDZMSEI4WS4u&origin=lprLink&route=shorturl";
+
+/* ================= UI ================= */
+
 const topbar = document.getElementById("topbar");
 const msg = document.getElementById("msg");
 const frame = document.getElementById("formsFrame");
+
 const overlay = document.getElementById("overlay");
+const overlayTitle = document.getElementById("overlayTitle");
+const overlayText = document.getElementById("overlayText");
+const overlayBtn = document.getElementById("overlayBtn");
+
+/* ================= TIMERS ================= */
 
 let intervalId = null;
-
-// ⏱️ para el “reloj” (cuenta regresiva)
 let countdownId = null;
+
 let secondsLeft = Math.floor(RECHECK_MS / 1000);
 let lastDistanceText = "OK";
 
-/**
- * Utilidad: formatea mm:ss
- */
+/* ================= HELPERS ================= */
+
 function fmtTime(sec){
   const m = String(Math.floor(sec / 60)).padStart(2, "0");
   const s = String(sec % 60).padStart(2, "0");
@@ -86,7 +105,8 @@ function fmtTime(sec){
 }
 
 function renderTopbar(){
-  topbar.textContent = `Acceso permitido · Revalidación en ${fmtTime(secondsLeft)} · Distancia: ${lastDistanceText}`;
+  topbar.textContent =
+    `Acceso permitido · Revalidación en ${fmtTime(secondsLeft)} · Distancia: ${lastDistanceText}`;
 }
 
 function startCountdown(){
@@ -97,44 +117,72 @@ function startCountdown(){
   countdownId = setInterval(() => {
     secondsLeft = Math.max(0, secondsLeft - 1);
     renderTopbar();
+
+    // ⛔ cuando llega a 0, se acaba el tiempo
+    if (secondsLeft === 0) {
+      lockTimeExpired();
+    }
   }, 1000);
 }
 
 function stopCountdown(){
-  if(countdownId){
+  if (countdownId){
     clearInterval(countdownId);
     countdownId = null;
   }
 }
 
-/**
- * Bloqueo total
- */
-function lock(reasonText){
-  topbar.textContent = reasonText || "Acceso bloqueado";
+function stopAll(){
   msg.textContent = "";
   frame.src = "";
   frame.style.display = "none";
-  overlay.style.display = "block";
-  if(intervalId) clearInterval(intervalId);
+  if (intervalId) clearInterval(intervalId);
   stopCountdown();
 }
 
-/**
- * Valida token + GPS
- */
+/* ================= BLOQUEOS ================= */
+
+function lockOutOfArea(){
+  stopAll();
+  overlayTitle.textContent = "Fuera del área permitida";
+  overlayText.innerHTML =
+    "Detectamos que saliste del perímetro autorizado.<br>" +
+    "Debes volver a escanear el QR en el punto autorizado para continuar.";
+  overlayBtn.textContent = "Volver a inicio";
+  overlayBtn.onclick = () => location.replace("/");
+  overlay.style.display = "block";
+  topbar.textContent = "Acceso bloqueado";
+}
+
+function lockTimeExpired(){
+  stopAll();
+  overlayTitle.textContent = "Tiempo agotado";
+  overlayText.innerHTML =
+    "Se acabó el tiempo para diligenciar el formulario.<br>" +
+    "Debes actualizar (refrescar) la página para continuar.";
+  overlayBtn.textContent = "Actualizar página";
+  overlayBtn.onclick = () => location.reload();
+  overlay.style.display = "block";
+  topbar.textContent = "Tiempo agotado";
+}
+
+/* ================= BACKEND ================= */
+
 async function validateTokenAndGPS(token){
-  const r = await fetch(`/.netlify/functions/validate?token=${encodeURIComponent(token)}`, {
-    cache: "no-store"
-  });
+  const r = await fetch(
+    `/.netlify/functions/validate?token=${encodeURIComponent(token)}`,
+    { cache: "no-store" }
+  );
   return await r.json();
 }
+
+/* ================= MAIN ================= */
 
 async function start(){
   const params = new URLSearchParams(location.search);
   const token = params.get("token");
 
-  if(!token){
+  if (!token){
     location.replace("/");
     return;
   }
@@ -143,50 +191,51 @@ async function start(){
     msg.textContent = "Validando acceso…";
     topbar.textContent = "Validando acceso…";
 
-    // 1) Validación inicial
+    // Validación inicial
     const first = await validateTokenAndGPS(token);
-    if(!first || !first.ok){
-      return lock("Fuera del área permitida");
+
+    if (!first || !first.ok){
+      return lockOutOfArea();
     }
 
-    // 2) Acceso permitido
-    lastDistanceText = (typeof first.distance_m === "number")
-      ? `${Math.round(first.distance_m)} m`
-      : "OK";
+    lastDistanceText =
+      (typeof first.distance_m === "number")
+        ? `${Math.round(first.distance_m)} m`
+        : "OK";
 
     msg.textContent = "";
     frame.src = FORM_URL;
     frame.style.display = "block";
 
-    // Quitar token de la barra
+    // Quitar token de la URL
     history.replaceState({}, "", "/form.html");
 
-    // 3) Iniciar “reloj” regresivo
+    // Iniciar reloj
     startCountdown();
 
-    // 4) Revalidación cada 1 minuto
+    // Revalidación cada 45 segundos
     intervalId = setInterval(async () => {
       try{
         const v = await validateTokenAndGPS(token);
 
-        if(!v || !v.ok){
-          return lock("Fuera del área permitida");
+        if (!v || v.ok === false){
+          return lockOutOfArea();
         }
 
-        lastDistanceText = (typeof v.distance_m === "number")
-          ? `${Math.round(v.distance_m)} m`
-          : "OK";
+        lastDistanceText =
+          (typeof v.distance_m === "number")
+            ? `${Math.round(v.distance_m)} m`
+            : "OK";
 
-        // reinicia el reloj cuando revalida
         startCountdown();
 
-      }catch(e){
-        lock("No se pudo revalidar ubicación");
+      }catch{
+        lockTimeExpired();
       }
     }, RECHECK_MS);
 
-  }catch(e){
-    lock("No se pudo validar acceso");
+  }catch{
+    lockTimeExpired();
   }
 }
 
@@ -194,7 +243,3 @@ start();
 </script>
 </body>
 </html>
-
-
-
-

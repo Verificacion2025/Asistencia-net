@@ -6,50 +6,154 @@
   <title>Encuesta</title>
   <style>
     html, body { margin:0; padding:0; height:100%; }
-    iframe { width:100%; height:100%; border:0; }
-    .msg{
-      font-family: system-ui, Arial, sans-serif;
-      padding:20px; text-align:center;
+    body { font-family: system-ui, Arial, sans-serif; }
+
+    #topbar{
+      padding:12px 14px;
+      text-align:center;
+      background:#f7f7f7;
+      border-bottom:1px solid #e5e5e5;
+      font-size:14px;
+    }
+
+    #msg{
+      padding:16px;
+      text-align:center;
+    }
+
+    iframe { width:100%; height:calc(100vh - 48px); border:0; display:none; }
+
+    #overlay{
+      position:fixed; inset:0; display:none;
+      background:rgba(0,0,0,.78); color:#fff;
+      padding:24px; z-index:9999;
+      text-align:center;
+    }
+    #overlay h2{ margin:0 0 10px; }
+    #overlay p{ margin:0 0 14px; line-height:1.4; }
+    #overlay button{
+      padding:12px 16px; border:0; border-radius:10px;
+      cursor:pointer; font-weight:700;
     }
   </style>
 </head>
+
 <body>
-  <div id="wrap" class="msg">Validando acceso...</div>
+  <div id="topbar">Validando acceso…</div>
+
+  <div id="overlay">
+    <h2>Fuera del área permitida</h2>
+    <p>
+      Detectamos que saliste del perímetro autorizado.<br>
+      Debes volver a escanear el QR en el punto autorizado para continuar.
+    </p>
+    <button onclick="location.replace('/')">Volver a inicio</button>
+  </div>
+
+  <div id="msg">Validando acceso…</div>
+  <iframe id="formsFrame" src="" allow="geolocation *"></iframe>
 
 <script>
-const FORM_URL = "https://forms.office.com/r/e418pQnBS0?origin=lprLink";
+/**
+ * CONFIG
+ */
+const RECHECK_MS = 60_000; // 1 minuto
 
-async function main(){
+// Tu link actual de Microsoft Forms (el que pegaste)
+const FORM_URL = "https://forms.office.com/pages/responsepage.aspx?id=phunyhs3akmGvKPvvktvmxNRWgTyZ2VAuDflhEb8kKNUMkc5OEs0WjM3QVU4OEdTUzJJSDZMSEI4WS4u&origin=lprLink&route=shorturl";
+
+/**
+ * UI
+ */
+const topbar = document.getElementById("topbar");
+const msg = document.getElementById("msg");
+const frame = document.getElementById("formsFrame");
+const overlay = document.getElementById("overlay");
+
+let intervalId = null;
+
+/**
+ * Bloqueo total (si sale del área o si falla la validación)
+ */
+function lock(reasonText){
+  topbar.textContent = reasonText || "Acceso bloqueado";
+  msg.textContent = "";
+  frame.src = "";
+  frame.style.display = "none";
+  overlay.style.display = "block";
+  if(intervalId) clearInterval(intervalId);
+}
+
+/**
+ * Llama al backend para validar token + GPS (en la función validate)
+ * OJO: Esto asume que tu validate.js ya devuelve:
+ *   { ok: true/false, distance_m: number, site?: string }
+ */
+async function validateTokenAndGPS(token){
+  const r = await fetch(`/.netlify/functions/validate?token=${encodeURIComponent(token)}`, {
+    cache: "no-store"
+  });
+  return await r.json();
+}
+
+async function start(){
   const params = new URLSearchParams(location.search);
   const token = params.get("token");
 
+  // Si entra sin token -> vuelve al inicio
   if(!token){
-    location.replace("/"); 
+    location.replace("/");
     return;
   }
 
   try{
-    const r = await fetch(`/.netlify/functions/validate?token=${encodeURIComponent(token)}`, { cache:"no-store" });
-    const data = await r.json();
+    // 1) Validación inicial
+    msg.textContent = "Validando acceso…";
+    topbar.textContent = "Validando acceso…";
 
-    if(!data.ok){
-      location.replace("/");
-      return;
+    const first = await validateTokenAndGPS(token);
+
+    if(!first || !first.ok){
+      // si no está permitido, fuera
+      return lock("Fuera del área permitida");
     }
 
-    document.getElementById("wrap").outerHTML = `
-      <iframe src="${FORM_URL}" allow="geolocation *"></iframe>
-    `;
+    // 2) Acceso permitido -> cargar forms
+    const distTxt = (typeof first.distance_m === "number") ? `${Math.round(first.distance_m)} m` : "OK";
+    topbar.textContent = `Acceso permitido · Revalidación cada 1 minuto · Distancia: ${distTxt}`;
+    msg.textContent = "";
+    frame.src = FORM_URL;
+    frame.style.display = "block";
 
-    // Quitar token de la barra
+    // 3) Ocultar el token de la barra de direcciones
     history.replaceState({}, "", "/form.html");
 
+    // 4) Revalidación cada 1 minuto
+    intervalId = setInterval(async () => {
+      try{
+        const v = await validateTokenAndGPS(token);
+
+        if(!v || !v.ok){
+          return lock("Fuera del área permitida");
+        }
+
+        const d2 = (typeof v.distance_m === "number") ? `${Math.round(v.distance_m)} m` : "OK";
+        topbar.textContent = `Acceso permitido · Revalidación cada 1 minuto · Distancia: ${d2}`;
+
+      }catch(e){
+        // Si hay error, mejor bloquear
+        lock("No se pudo revalidar ubicación");
+      }
+    }, RECHECK_MS);
+
   }catch(e){
-    location.replace("/");
+    lock("No se pudo validar acceso");
   }
 }
 
-main();
+start();
 </script>
 </body>
 </html>
+
+

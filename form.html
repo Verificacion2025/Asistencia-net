@@ -6,50 +6,240 @@
   <title>Encuesta</title>
   <style>
     html, body { margin:0; padding:0; height:100%; }
-    iframe { width:100%; height:100%; border:0; }
-    .msg{
-      font-family: system-ui, Arial, sans-serif;
-      padding:20px; text-align:center;
+    body { font-family: system-ui, Arial, sans-serif; }
+
+    #topbar{
+      padding:12px 14px;
+      text-align:center;
+      background:#f7f7f7;
+      border-bottom:1px solid #e5e5e5;
+      font-size:14px;
+    }
+
+    #msg{
+      padding:16px;
+      text-align:center;
+    }
+
+    iframe {
+      width:100%;
+      height:calc(100vh - 48px);
+      border:0;
+      display:none;
+    }
+
+    #overlay{
+      position:fixed;
+      inset:0;
+      display:none;
+      background:rgba(0,0,0,.78);
+      color:#fff;
+      padding:24px;
+      z-index:9999;
+      text-align:center;
+    }
+
+    #overlay h2{ margin:0 0 10px; }
+    #overlay p{ margin:0 0 14px; line-height:1.4; }
+
+    #overlay button{
+      padding:12px 16px;
+      border:0;
+      border-radius:10px;
+      cursor:pointer;
+      font-weight:700;
     }
   </style>
 </head>
+
 <body>
-  <div id="wrap" class="msg">Validando acceso...</div>
+  <div id="topbar">Validando acceso…</div>
+
+  <div id="overlay">
+    <h2 id="overlayTitle">Aviso</h2>
+    <p id="overlayText"></p>
+    <button id="overlayBtn">Actualizar</button>
+  </div>
+
+  <div id="msg">Validando acceso…</div>
+  <iframe id="formsFrame"
+    src=""
+    allow="geolocation *">
+  </iframe>
 
 <script>
-const FORM_URL = "https://forms.office.com/r/e418pQnBS0?origin=lprLink";
+/* ================= CONFIG ================= */
 
-async function main(){
+// ⏱️ 45 segundos
+const RECHECK_MS = 45_000;
+
+// 🔗 TU MICROSOFT FORMS
+const FORM_URL =
+  "https://forms.office.com/pages/responsepage.aspx?id=phunyhs3akmGvKPvvktvmxNRWgTyZ2VAuDflhEb8kKNUMkc5OEs0WjM3QVU4OEdTUzJJSDZMSEI4WS4u&origin=lprLink&route=shorturl";
+
+/* ================= UI ================= */
+
+const topbar = document.getElementById("topbar");
+const msg = document.getElementById("msg");
+const frame = document.getElementById("formsFrame");
+
+const overlay = document.getElementById("overlay");
+const overlayTitle = document.getElementById("overlayTitle");
+const overlayText = document.getElementById("overlayText");
+const overlayBtn = document.getElementById("overlayBtn");
+
+/* ================= TIMERS ================= */
+
+let intervalId = null;
+let countdownId = null;
+
+let secondsLeft = Math.floor(RECHECK_MS / 1000);
+let lastDistanceText = "OK";
+
+/* ================= HELPERS ================= */
+
+function fmtTime(sec){
+  const m = String(Math.floor(sec / 60)).padStart(2, "0");
+  const s = String(sec % 60).padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function renderTopbar(){
+  topbar.textContent =
+    `Acceso permitido · Revalidación en ${fmtTime(secondsLeft)} · Distancia: ${lastDistanceText}`;
+}
+
+function startCountdown(){
+  stopCountdown();
+  secondsLeft = Math.floor(RECHECK_MS / 1000);
+  renderTopbar();
+
+  countdownId = setInterval(() => {
+    secondsLeft = Math.max(0, secondsLeft - 1);
+    renderTopbar();
+
+    // ⛔ cuando llega a 0, se acaba el tiempo
+    if (secondsLeft === 0) {
+      lockTimeExpired();
+    }
+  }, 1000);
+}
+
+function stopCountdown(){
+  if (countdownId){
+    clearInterval(countdownId);
+    countdownId = null;
+  }
+}
+
+function stopAll(){
+  msg.textContent = "";
+  frame.src = "";
+  frame.style.display = "none";
+  if (intervalId) clearInterval(intervalId);
+  stopCountdown();
+}
+
+/* ================= BLOQUEOS ================= */
+
+function lockOutOfArea(){
+  stopAll();
+  overlayTitle.textContent = "Fuera del área permitida";
+  overlayText.innerHTML =
+    "Detectamos que saliste del perímetro autorizado.<br>" +
+    "Debes volver a escanear el QR en el punto autorizado para continuar.";
+  overlayBtn.textContent = "Volver a inicio";
+  overlayBtn.onclick = () => location.replace("/");
+  overlay.style.display = "block";
+  topbar.textContent = "Acceso bloqueado";
+}
+
+function lockTimeExpired(){
+  stopAll();
+  overlayTitle.textContent = "Tiempo agotado";
+  overlayText.innerHTML =
+    "Se acabó el tiempo para diligenciar el formulario.<br>" +
+    "Debes actualizar (refrescar) la página para continuar.";
+  overlayBtn.textContent = "Actualizar página";
+  overlayBtn.onclick = () => location.reload();
+  overlay.style.display = "block";
+  topbar.textContent = "Tiempo agotado";
+}
+
+/* ================= BACKEND ================= */
+
+async function validateTokenAndGPS(token){
+  const r = await fetch(
+    `/.netlify/functions/validate?token=${encodeURIComponent(token)}`,
+    { cache: "no-store" }
+  );
+  return await r.json();
+}
+
+/* ================= MAIN ================= */
+
+async function start(){
   const params = new URLSearchParams(location.search);
   const token = params.get("token");
 
-  if(!token){
-    location.replace("/"); 
+  if (!token){
+    location.replace("/");
     return;
   }
 
   try{
-    const r = await fetch(`/.netlify/functions/validate?token=${encodeURIComponent(token)}`, { cache:"no-store" });
-    const data = await r.json();
+    msg.textContent = "Validando acceso…";
+    topbar.textContent = "Validando acceso…";
 
-    if(!data.ok){
-      location.replace("/");
-      return;
+    // Validación inicial
+    const first = await validateTokenAndGPS(token);
+
+    if (!first || !first.ok){
+      return lockOutOfArea();
     }
 
-    document.getElementById("wrap").outerHTML = `
-      <iframe src="${FORM_URL}" allow="geolocation *"></iframe>
-    `;
+    lastDistanceText =
+      (typeof first.distance_m === "number")
+        ? `${Math.round(first.distance_m)} m`
+        : "OK";
 
-    // Quitar token de la barra
+    msg.textContent = "";
+    frame.src = FORM_URL;
+    frame.style.display = "block";
+
+    // Quitar token de la URL
     history.replaceState({}, "", "/form.html");
 
-  }catch(e){
-    location.replace("/");
+    // Iniciar reloj
+    startCountdown();
+
+    // Revalidación cada 45 segundos
+    intervalId = setInterval(async () => {
+      try{
+        const v = await validateTokenAndGPS(token);
+
+        if (!v || v.ok === false){
+          return lockOutOfArea();
+        }
+
+        lastDistanceText =
+          (typeof v.distance_m === "number")
+            ? `${Math.round(v.distance_m)} m`
+            : "OK";
+
+        startCountdown();
+
+      }catch{
+        lockTimeExpired();
+      }
+    }, RECHECK_MS);
+
+  }catch{
+    lockTimeExpired();
   }
 }
 
-main();
+start();
 </script>
 </body>
 </html>
